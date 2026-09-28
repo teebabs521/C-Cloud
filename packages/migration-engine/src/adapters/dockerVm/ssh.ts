@@ -24,7 +24,20 @@ async function withTempKey<T>(creds: DockerVmCredentials, fn: (keyPath: string |
  * for `scp`.
  */
 function baseSshArgs(creds: DockerVmCredentials, keyPath: string | null, portFlag: "-p" | "-P" = "-p"): string[] {
-  const args = [portFlag, String(creds.port), "-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes"];
+  const args = [
+    portFlag,
+    String(creds.port),
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "BatchMode=yes",
+    // Without this, an unreachable/mistyped host hangs on the OS's own TCP
+    // connect timeout (can be a minute or more) instead of failing fast
+    // with a clear error — and waitForSsh's whole retry budget is 180s, so
+    // one slow attempt could eat nearly all of it.
+    "-o",
+    "ConnectTimeout=15",
+  ];
   if (keyPath) args.push("-i", keyPath);
   return args;
 }
