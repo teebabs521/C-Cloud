@@ -1,4 +1,7 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { CpanelBackupPlan, MigrationSelection } from "../../parser/types.js";
 import { DatabaseCredentialsOut, DockerVmCredentials, LogFn } from "../types.js";
 import { generateDockerCompose, generateNginxConf } from "./compose.js";
@@ -13,6 +16,25 @@ function sanitizeSqlIdentifier(name: string): string {
     throw new Error(`Refusing to use unsafe SQL identifier: ${name}`);
   }
   return name;
+}
+
+/**
+ * A raw mysqldump occasionally carries a `GRANT ... TO 'olduser'@'oldhost'`
+ * line (cPanel exports sometimes include one). Piping that verbatim into
+ * the new server breaks the whole import the moment MySQL hits a GRANT for
+ * a user that doesn't exist there — and it would grant access for an old
+ * hostname/user we don't want anyway, since we create fresh DB users
+ * ourselves. Strip such lines before uploading; leave everything else
+ * (including DEFINER= clauses, which we deliberately don't touch) as-is.
+ * Returns the original path unchanged if there was nothing to strip.
+ */
+export async function sanitizeDumpForImport(dumpFile: string): Promise<string> {
+  const original = await fs.readFile(dumpFile, "utf8");
+  const sanitized = original.replace(/^\s*GRANT\b.*;\s*$/gim, "");
+  if (sanitized === original) return dumpFile;
+  const tmpFile = path.join(os.tmpdir(), `c-cloud-dump-${randomUUID()}.sql`);
+  await fs.writeFile(tmpFile, sanitized, "utf8");
+  return tmpFile;
 }
 
 /**
@@ -84,6 +106,8 @@ export async function importDatabasesOverSsh(
 ): Promise<DatabaseCredentialsOut[]> {
   const results: DatabaseCredentialsOut[] = [];
 
+  await sshExec(ssh, `mkdir -p '${ssh.remoteBaseDir}/tmp'`, () => {});
+
   log("Waiting for MySQL container to accept connections...");
   await sshExec(
     ssh,
@@ -102,12 +126,13 @@ export async function importDatabasesOverSsh(
     await sshExec(
       ssh,
       `cd '${ssh.remoteBaseDir}' && docker compose exec -T mysql mysql -uroot -p"$(cat .env.mysql-root-password)" -e "${createSql}"`,
-      log
+      log,
+      [dbPassword]
     );
 
     const remoteDump = `${ssh.remoteBaseDir}/tmp/${dbName}.sql`;
     log(`Uploading dump for ${dbName}...`);
-    await scpPush(ssh, db.dumpFile, remoteDump, log);
+    await scpPush(ssh, await sanitizeDumpForImport(db.dumpFile), remoteDump, log);
 
     log(`Importing ${dbName}...`);
     await sshExec(
@@ -143,6 +168,7 @@ export async function importDatabasesToExternalMysql(
 ): Promise<DatabaseCredentialsOut[]> {
   const results: DatabaseCredentialsOut[] = [];
 
+  await sshExec(ssh, `mkdir -p '${ssh.remoteBaseDir}/tmp'`, () => {});
   await sshExec(ssh, "command -v mysql >/dev/null 2>&1 || (apt-get update -y && apt-get install -y mysql-client)", log);
 
   const mysqlCli = (sql: string) =>
@@ -156,17 +182,18 @@ export async function importDatabasesToExternalMysql(
 
     log(`Creating database ${dbName} on ${endpoint.host}...`);
     const createSql = `CREATE DATABASE IF NOT EXISTS \\\`${dbName}\\\`; CREATE USER IF NOT EXISTS '${dbUser}'@'%' IDENTIFIED BY '${dbPassword}'; GRANT ALL PRIVILEGES ON \\\`${dbName}\\\`.* TO '${dbUser}'@'%'; FLUSH PRIVILEGES;`;
-    await sshExec(ssh, mysqlCli(createSql), log);
+    await sshExec(ssh, mysqlCli(createSql), log, [endpoint.masterPassword, dbPassword]);
 
     const remoteDump = `${ssh.remoteBaseDir}/tmp/${dbName}.sql`;
     log(`Uploading dump for ${dbName}...`);
-    await scpPush(ssh, db.dumpFile, remoteDump, log);
+    await scpPush(ssh, await sanitizeDumpForImport(db.dumpFile), remoteDump, log);
 
     log(`Importing ${dbName} into ${endpoint.host}...`);
     await sshExec(
       ssh,
       `mysql -h '${endpoint.host}' -P ${endpoint.port} -u'${endpoint.masterUser}' -p'${endpoint.masterPassword}' '${dbName}' < ${remoteDump} && rm -f ${remoteDump}`,
-      log
+      log,
+      [endpoint.masterPassword]
     );
 
     results.push({ database: dbName, host: endpoint.host, port: endpoint.port, user: dbUser, password: dbPassword });

@@ -1,9 +1,11 @@
 import { TargetAdapter } from "../adapters/types.js";
 import { dockerVmAdapter } from "../adapters/dockerVm/dockerVmAdapter.js";
 import { awsAdapter } from "../adapters/aws/awsAdapter.js";
+import { dnsAdaptersByKind } from "../dns/registry.js";
+import { DnsInstruction } from "../dns/types.js";
 import { parseCpanelBackup } from "../parser/cpanelBackup.js";
 import { JobStore } from "./store.js";
-import { DnsInstruction, MigrationJob } from "./types.js";
+import { MigrationJob } from "./types.js";
 
 export const adaptersByKind: Record<string, TargetAdapter> = {
   "docker-vm": dockerVmAdapter,
@@ -110,12 +112,49 @@ export async function runMigration(store: JobStore, jobId: string): Promise<void
     job.dnsInstructions = buildDnsInstructions(job);
     job.status = "cutover_ready";
     store.update(job);
-    log("Migration complete. Review the DNS cutover checklist, verify the new site, then update your DNS records when ready.");
+    log(
+      job.dnsProviderCredentials
+        ? "Migration complete. Verify the new site, then apply the DNS cutover when ready."
+        : "Migration complete. Review the DNS cutover checklist, verify the new site, then update your DNS records when ready."
+    );
   } catch (err) {
     job.status = "failed";
     job.error = err instanceof Error ? err.message : String(err);
     store.update(job);
     log(`Migration failed: ${job.error}`);
+    throw err;
+  }
+}
+
+/**
+ * Pushes the job's DNS cutover instructions to whichever provider is
+ * configured on it. Left as an explicit, separate step from runMigration —
+ * changing DNS is meant to be a deliberate action once the new site has
+ * been verified, not something that fires automatically the moment file/DB
+ * transfer finishes.
+ */
+export async function applyDnsCutover(store: JobStore, jobId: string): Promise<void> {
+  const job = requireJob(store, jobId);
+  if (job.status !== "cutover_ready" && job.status !== "complete") {
+    throw new Error(`Job is not ready for DNS cutover (status: ${job.status})`);
+  }
+  if (!job.dnsProviderCredentials) throw new Error("No DNS provider configured for this job");
+  if (job.dnsInstructions.length === 0) throw new Error("No DNS instructions to apply");
+
+  const adapter = dnsAdaptersByKind[job.dnsProviderCredentials.kind];
+  if (!adapter) throw new Error(`No DNS adapter registered for provider kind ${job.dnsProviderCredentials.kind}`);
+
+  const log = (message: string) => store.appendLog(jobId, message);
+  try {
+    log(`Applying DNS cutover via ${job.dnsProviderCredentials.kind}...`);
+    await adapter.applyRecords(job.dnsProviderCredentials, job.dnsInstructions, log);
+    job.dnsCutoverAppliedAt = new Date().toISOString();
+    job.status = "complete";
+    store.update(job);
+    log("DNS cutover applied.");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    store.appendLog(jobId, `DNS cutover failed: ${message}`);
     throw err;
   }
 }

@@ -1,5 +1,6 @@
 import { CpanelBackupPlan, MigrationSelection } from "../parser/types.js";
 import { DatabaseCredentialsOut, ProvisionedTarget, TargetCredentials } from "../adapters/types.js";
+import { DnsInstruction, DnsProviderCredentials } from "../dns/types.js";
 
 export type JobStatus =
   | "uploaded"
@@ -28,15 +29,10 @@ export interface MigrationJob {
   databaseCredentials: DatabaseCredentialsOut[];
   emailGuidance: string[];
   dnsInstructions: DnsInstruction[];
+  /** Optional — only needed if the user wants C-Cloud to push the DNS cutover itself. */
+  dnsProviderCredentials: DnsProviderCredentials | null;
+  dnsCutoverAppliedAt: string | null;
   error: string | null;
-}
-
-export interface DnsInstruction {
-  domain: string;
-  recordType: "A" | "MX" | "CNAME";
-  name: string;
-  value: string;
-  note: string;
 }
 
 export interface JobLogEntry {

@@ -95,6 +95,22 @@ export interface DnsInstruction {
   note: string;
 }
 
+export type CloudflareDnsCredentials = {
+  kind: "cloudflare";
+  apiToken: string;
+  zoneId: string;
+};
+
+export type Route53DnsCredentials = {
+  kind: "route53";
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  hostedZoneId: string;
+};
+
+export type DnsProviderCredentials = CloudflareDnsCredentials | Route53DnsCredentials;
+
 export type JobStatus =
   | "uploaded"
   | "parsing"
@@ -120,6 +136,8 @@ export interface MigrationJob {
   databaseCredentials: DatabaseCredentialsOut[];
   emailGuidance: string[];
   dnsInstructions: DnsInstruction[];
+  dnsProviderCredentials: Record<string, unknown> | null;
+  dnsCutoverAppliedAt: string | null;
   error: string | null;
 }
 

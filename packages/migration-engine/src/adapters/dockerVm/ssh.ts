@@ -16,10 +16,27 @@ async function withTempKey<T>(creds: DockerVmCredentials, fn: (keyPath: string |
   }
 }
 
-function baseSshArgs(creds: DockerVmCredentials, keyPath: string | null): string[] {
-  const args = ["-p", String(creds.port), "-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes"];
+/**
+ * `ssh` takes the port as `-p <port>`; `scp` takes the *same* port flag as
+ * `-P <port>` (uppercase) — its lowercase `-p` means "preserve
+ * modification times" instead and silently swallows the port number as a
+ * positional filename argument. Pass `portFlag: "-P"` when building args
+ * for `scp`.
+ */
+function baseSshArgs(creds: DockerVmCredentials, keyPath: string | null, portFlag: "-p" | "-P" = "-p"): string[] {
+  const args = [portFlag, String(creds.port), "-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes"];
   if (keyPath) args.push("-i", keyPath);
   return args;
+}
+
+/** Replaces any occurrence of a secret value with `***` before it reaches a log sink. */
+function maskSecrets(text: string, secrets: string[]): string {
+  let masked = text;
+  for (const secret of secrets) {
+    if (!secret) continue;
+    masked = masked.split(secret).join("***");
+  }
+  return masked;
 }
 
 function runCommand(cmd: string, args: string[], log: LogFn): Promise<void> {
@@ -35,12 +52,23 @@ function runCommand(cmd: string, args: string[], log: LogFn): Promise<void> {
   });
 }
 
-/** Runs a single command on the remote host over SSH. Requires the `ssh` binary. */
-export async function sshExec(creds: DockerVmCredentials, remoteCommand: string, log: LogFn): Promise<void> {
+/**
+ * Runs a single command on the remote host over SSH. Requires the `ssh`
+ * binary. Any strings passed in `secrets` are masked out of what gets
+ * logged (the *actual* command sent over SSH is never altered) — pass the
+ * literal secret values a command embeds, e.g. a freshly generated DB
+ * password, so they never end up sitting in the job's log history.
+ */
+export async function sshExec(
+  creds: DockerVmCredentials,
+  remoteCommand: string,
+  log: LogFn,
+  secrets: string[] = []
+): Promise<void> {
   await withTempKey(creds, async (keyPath) => {
     const args = [...baseSshArgs(creds, keyPath), `${creds.username}@${creds.host}`, remoteCommand];
-    log(`$ ssh ${creds.host} '${remoteCommand}'`);
-    await runCommand("ssh", args, log);
+    log(`$ ssh ${creds.host} '${maskSecrets(remoteCommand, secrets)}'`);
+    await runCommand("ssh", args, (line) => log(maskSecrets(line, secrets)));
   });
 }
 
@@ -69,7 +97,7 @@ export async function scpPush(
   log: LogFn
 ): Promise<void> {
   await withTempKey(creds, async (keyPath) => {
-    const args = [...baseSshArgs(creds, keyPath), localFile, `${creds.username}@${creds.host}:${remoteFile}`];
+    const args = [...baseSshArgs(creds, keyPath, "-P"), localFile, `${creds.username}@${creds.host}:${remoteFile}`];
     log(`$ scp ${localFile} -> ${creds.host}:${remoteFile}`);
     await runCommand("scp", args, log);
   });
@@ -92,13 +120,27 @@ export async function waitForSsh(creds: DockerVmCredentials, log: LogFn, timeout
   throw new Error(`Timed out waiting for SSH on ${creds.host}: ${String(lastError)}`);
 }
 
-/** Writes a small text file's contents directly on the remote host (no local temp file needed). */
+/**
+ * Writes a small text file's contents directly on the remote host (no local
+ * temp file needed). The underlying command (which embeds the file's full
+ * content as base64) is deliberately never passed to `log` — only a
+ * one-line summary is — since this is how secret files like the MySQL root
+ * password get written.
+ */
 export async function writeRemoteFile(
   creds: DockerVmCredentials,
   remotePath: string,
   contents: string,
   log: LogFn
 ): Promise<void> {
+  log(`Writing ${remotePath} (${contents.length} bytes)...`);
   const encoded = Buffer.from(contents, "utf8").toString("base64");
-  await sshExec(creds, `mkdir -p '$(dirname "${remotePath}")' && echo '${encoded}' | base64 -d > '${remotePath}'`, log);
+  // NOTE: the dirname substitution must be double-quoted, not single-quoted —
+  // single quotes suppress `$(...)` command substitution entirely, which
+  // silently no-ops the mkdir and only surfaces later as a write failure.
+  await sshExec(
+    creds,
+    `mkdir -p "$(dirname "${remotePath}")" && echo '${encoded}' | base64 -d > '${remotePath}'`,
+    () => {}
+  );
 }

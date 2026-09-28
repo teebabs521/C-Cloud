@@ -1,4 +1,4 @@
-import { JobLogEntry, MigrationJob, MigrationSelection, TargetCredentials } from "./types";
+import { DnsProviderCredentials, JobLogEntry, MigrationJob, MigrationSelection, TargetCredentials } from "./types";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -52,6 +52,20 @@ export async function putTarget(id: string, target: TargetCredentials): Promise<
 
 export async function startMigration(id: string): Promise<MigrationJob> {
   return json(await fetch(`/api/migrations/${id}/start`, { method: "POST" }));
+}
+
+export async function putDnsProvider(id: string, credentials: DnsProviderCredentials): Promise<MigrationJob> {
+  return json(
+    await fetch(`/api/migrations/${id}/dns-provider`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(credentials),
+    })
+  );
+}
+
+export async function applyDnsCutover(id: string): Promise<MigrationJob> {
+  return json(await fetch(`/api/migrations/${id}/dns/apply`, { method: "POST" }));
 }
 
 export function streamLogs(id: string, onEntry: (entry: JobLogEntry) => void, onDone: (status: string) => void): () => void {

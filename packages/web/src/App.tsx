@@ -103,7 +103,7 @@ export default function App() {
         <ProgressStep jobId={job.id} status={job.status} onDone={onProgressDone} />
       )}
 
-      {step === "done" && job && <CutoverStep job={job} />}
+      {step === "done" && job && <CutoverStep job={job} onJobUpdate={setJob} />}
     </div>
   );
 }

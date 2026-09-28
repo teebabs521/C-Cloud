@@ -4,10 +4,12 @@ import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import {
+  DnsProviderCredentials,
   JobStore,
   MigrationJob,
   MigrationSelection,
   TargetCredentials,
+  applyDnsCutover,
   extractBackupArchive,
   parseJob,
   runMigration,
@@ -35,6 +37,8 @@ function newJobSkeleton(id: string, archivePath: string): MigrationJob {
     databaseCredentials: [],
     emailGuidance: [],
     dnsInstructions: [],
+    dnsProviderCredentials: null,
+    dnsCutoverAppliedAt: null,
     error: null,
   };
 }
@@ -138,6 +142,35 @@ export function registerMigrationRoutes(app: FastifyInstance, store: JobStore): 
     runMigration(store, job.id).catch((err) => {
       request.log.error(err, `migration ${job.id} failed`);
     });
+  });
+
+  app.put<{ Params: { id: string }; Body: DnsProviderCredentials }>(
+    "/api/migrations/:id/dns-provider",
+    async (request, reply) => {
+      const job = store.get(request.params.id);
+      if (!job) return reply.code(404).send({ error: "job not found" });
+      if (!request.body?.kind) return reply.code(400).send({ error: "missing DNS provider credentials" });
+      job.dnsProviderCredentials = request.body;
+      store.update(job);
+      return toPublicJob(job);
+    }
+  );
+
+  app.post<{ Params: { id: string } }>("/api/migrations/:id/dns/apply", async (request, reply) => {
+    const job = store.get(request.params.id);
+    if (!job) return reply.code(404).send({ error: "job not found" });
+    if (job.status !== "cutover_ready" && job.status !== "complete") {
+      return reply.code(409).send({ error: `job is not ready for DNS cutover (status: ${job.status})` });
+    }
+    if (!job.dnsProviderCredentials) {
+      return reply.code(409).send({ error: "no DNS provider configured for this job" });
+    }
+    try {
+      await applyDnsCutover(store, job.id);
+    } catch (err) {
+      return reply.code(502).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+    return toPublicJob(store.get(job.id)!);
   });
 
   app.get<{ Params: { id: string } }>("/api/migrations/:id/logs", async (request, reply) => {
