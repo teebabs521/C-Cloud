@@ -1,0 +1,2 @@
+# cPanel crontab
+0 3 * * * /usr/bin/php /home/testuser/public_html/cron/cleanup.php

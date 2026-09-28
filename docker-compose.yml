@@ -1,0 +1,14 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: packages/api/Dockerfile
+    ports:
+      - "4000:4000"
+    volumes:
+      - c_cloud_data:/data
+    environment:
+      CORS_ORIGIN: "http://localhost:5173"
+
+volumes:
+  c_cloud_data:

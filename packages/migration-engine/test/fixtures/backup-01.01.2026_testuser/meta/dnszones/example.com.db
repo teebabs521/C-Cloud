@@ -1,0 +1,4 @@
+; zone file for example.com
+example.com.		14400	IN	A	203.0.113.10
+www.example.com.	14400	IN	CNAME	example.com.
+example.com.		14400	IN	MX	10 mail.example.com.

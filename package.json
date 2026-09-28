@@ -1,0 +1,18 @@
+{
+  "name": "c-cloud",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Migrate websites from cPanel hosting to the cloud, seamlessly.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "dev:api": "npm run dev --workspace packages/api",
+    "dev:web": "npm run dev --workspace packages/web"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
